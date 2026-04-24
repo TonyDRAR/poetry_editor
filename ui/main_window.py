@@ -6,6 +6,33 @@ from services.file_service import FileService
 
 
 class MainWindow(tk.Tk):
+    THEMES = {
+        "light": {
+            "window_bg": "#f3f3f3",
+            "editor_bg": "#ffffff",
+            "editor_fg": "#111111",
+            "insert_bg": "#111111",
+            "select_bg": "#0a64ad",
+            "select_fg": "#ffffff",
+            "menu_bg": "#f3f3f3",
+            "menu_fg": "#111111",
+            "active_bg": "#e5e5e5",
+            "active_fg": "#111111",
+        },
+        "dark": {
+            "window_bg": "#1f1f1f",
+            "editor_bg": "#121212",
+            "editor_fg": "#eeeeee",
+            "insert_bg": "#eeeeee",
+            "select_bg": "#3a78c2",
+            "select_fg": "#ffffff",
+            "menu_bg": "#2b2b2b",
+            "menu_fg": "#eeeeee",
+            "active_bg": "#3a3a3a",
+            "active_fg": "#ffffff",
+        },
+    }
+
     def __init__(self):
         super().__init__()
 
@@ -14,36 +41,40 @@ class MainWindow(tk.Tk):
 
         self.editor_core = Editor()
         self.file_service = FileService()
+        self.dark_theme_enabled = tk.BooleanVar(value=False)
+        self.menus = []
 
         self.create_widgets()
         self.create_menu()
+        self.apply_theme()
         self.bind_shortcuts()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
 
     def create_widgets(self):
-        frame = tk.Frame(self)
-        frame.pack(fill=tk.BOTH, expand=True)
+        self.main_frame = tk.Frame(self)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        scrollbar = tk.Scrollbar(frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scrollbar = tk.Scrollbar(self.main_frame)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.text_edit = tk.Text(
-            frame,
+            self.main_frame,
             wrap=tk.WORD,
             undo=True,
-            yscrollcommand=scrollbar.set,
+            yscrollcommand=self.scrollbar.set,
         )
         self.text_edit.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.text_edit.yview)
+        self.scrollbar.config(command=self.text_edit.yview)
 
         self.text_edit.bind("<<Modified>>", self.on_text_changed)
 
     def create_menu(self):
-        menu = tk.Menu(self)
-        self.config(menu=menu)
+        self.menu = tk.Menu(self)
+        self.config(menu=self.menu)
 
-        file_menu = tk.Menu(menu, tearoff=False)
-        menu.add_cascade(label="Fichier", menu=file_menu)
+        file_menu = tk.Menu(self.menu, tearoff=False)
+        self.menu.add_cascade(label="Fichier", menu=file_menu)
+        self.menus.append(file_menu)
 
         file_menu.add_command(label="Nouveau", command=self.new_file, accelerator="Ctrl+N")
         file_menu.add_command(label="Ouvrir", command=self.open_file, accelerator="Ctrl+O")
@@ -52,6 +83,16 @@ class MainWindow(tk.Tk):
         file_menu.add_command(label="Sauvegarder sous", command=self.save_file_as)
         file_menu.add_separator()
         file_menu.add_command(label="Quitter", command=self.close_window)
+
+        options_menu = tk.Menu(self.menu, tearoff=False)
+        self.menu.add_cascade(label="Options", menu=options_menu)
+        self.menus.append(options_menu)
+
+        options_menu.add_checkbutton(
+            label="Theme sombre",
+            variable=self.dark_theme_enabled,
+            command=self.apply_theme,
+        )
 
     def bind_shortcuts(self):
         self.bind("<Control-n>", lambda _event: self.new_file())
@@ -114,6 +155,40 @@ class MainWindow(tk.Tk):
     def on_text_changed(self, _event=None):
         if self.text_edit.edit_modified():
             self.editor_core.mark_modified()
+
+    def apply_theme(self):
+        theme_name = "dark" if self.dark_theme_enabled.get() else "light"
+        theme = self.THEMES[theme_name]
+
+        self.configure(bg=theme["window_bg"])
+        self.main_frame.configure(bg=theme["window_bg"])
+        self.scrollbar.configure(
+            bg=theme["menu_bg"],
+            activebackground=theme["active_bg"],
+            troughcolor=theme["window_bg"],
+        )
+        self.text_edit.configure(
+            bg=theme["editor_bg"],
+            fg=theme["editor_fg"],
+            insertbackground=theme["insert_bg"],
+            selectbackground=theme["select_bg"],
+            selectforeground=theme["select_fg"],
+        )
+        self.menu.configure(
+            bg=theme["menu_bg"],
+            fg=theme["menu_fg"],
+            activebackground=theme["active_bg"],
+            activeforeground=theme["active_fg"],
+        )
+
+        for menu in self.menus:
+            menu.configure(
+                bg=theme["menu_bg"],
+                fg=theme["menu_fg"],
+                activebackground=theme["active_bg"],
+                activeforeground=theme["active_fg"],
+                selectcolor=theme["editor_bg"],
+            )
 
     def confirm_unsaved_changes(self) -> bool:
         if not self.editor_core.is_modified():
