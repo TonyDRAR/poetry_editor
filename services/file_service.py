@@ -13,5 +13,5 @@ class FileService:
                 f.write(content)
             return True
         except Exception as e:
-            print(f"Erreur écriture fichier: {e}")
+            print(f"Erreur ecriture fichier: {e}")
             return False

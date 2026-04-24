@@ -1,20 +1,9 @@
-import sys
-import os
-
-os.environ["QT_QPA_PLATFORM"] = "minimal"
-os.environ["QT_OPENGL"] = "software"
-
-from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 
 
 def main():
-    app = QApplication(sys.argv)
-
     window = MainWindow()
-    window.show()
-
-    sys.exit(app.exec())
+    window.mainloop()
 
 
 if __name__ == "__main__":
