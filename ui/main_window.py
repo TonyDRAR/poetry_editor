@@ -330,6 +330,7 @@ class MainWindow(tk.Tk):
             self.text_edit.edit_modified(False)
             self.update_window_title()
             self.update_status()
+            self.refresh_folder_tree(self.editor_core.file_path)
 
         return success
 
@@ -352,6 +353,7 @@ class MainWindow(tk.Tk):
             self.text_edit.edit_modified(False)
             self.update_window_title()
             self.update_status()
+            self.refresh_folder_tree(path)
 
         return success
 
@@ -376,6 +378,33 @@ class MainWindow(tk.Tk):
         )
         self.insert_folder_children(root_id, path)
 
+    def refresh_folder_tree(self, selected_path: str | None = None):
+        if not self.current_folder:
+            return
+
+        selected_path = selected_path or self.editor_core.file_path
+
+        if selected_path and not self.is_path_in_current_folder(selected_path):
+            return
+
+        open_paths = self.get_open_tree_paths()
+        self.populate_folder_tree(self.current_folder)
+
+        for path in open_paths:
+            item_id = self.find_tree_item_by_path(path)
+
+            if item_id:
+                self.ensure_tree_folder_loaded(item_id, path)
+                self.folder_tree.item(item_id, open=True)
+
+        if selected_path:
+            selected_item = self.find_tree_item_by_path(selected_path)
+
+            if selected_item:
+                self.folder_tree.selection_set(selected_item)
+                self.folder_tree.focus(selected_item)
+                self.folder_tree.see(selected_item)
+
     def insert_folder_children(self, parent_id: str, path: str):
         try:
             entries = sorted(
@@ -390,7 +419,12 @@ class MainWindow(tk.Tk):
                 continue
 
             label = entry.name
-            item_id = self.folder_tree.insert(parent_id, tk.END, text=label, values=(entry.path,))
+            item_id = self.folder_tree.insert(
+                parent_id,
+                tk.END,
+                text=label,
+                values=(entry.path,),
+            )
 
             if entry.is_dir():
                 self.folder_tree.insert(item_id, tk.END, text="Chargement...", values=("",))
@@ -424,6 +458,86 @@ class MainWindow(tk.Tk):
 
         values = self.folder_tree.item(item_id, "values")
         return values[0] if values else ""
+
+    def get_open_tree_paths(self) -> set[str]:
+        open_paths = set()
+
+        def collect_open_paths(parent_id: str):
+            for item_id in self.folder_tree.get_children(parent_id):
+                path = self.get_tree_item_path(item_id)
+
+                if path and os.path.isdir(path) and self.folder_tree.item(item_id, "open"):
+                    open_paths.add(path)
+                    collect_open_paths(item_id)
+
+        collect_open_paths("")
+        return open_paths
+
+    def ensure_tree_folder_loaded(self, item_id: str, path: str):
+        children = self.folder_tree.get_children(item_id)
+
+        if len(children) == 1 and not self.get_tree_item_path(children[0]):
+            self.folder_tree.delete(children[0])
+            self.insert_folder_children(item_id, path)
+
+    def find_tree_item_by_path(self, target_path: str) -> str:
+        root_items = self.folder_tree.get_children("")
+
+        if not root_items or not self.current_folder:
+            return ""
+
+        root_id = root_items[0]
+        root_path = os.path.abspath(self.current_folder)
+        target_path = os.path.abspath(target_path)
+
+        if os.path.normcase(root_path) == os.path.normcase(target_path):
+            return root_id
+
+        try:
+            relative_path = os.path.relpath(target_path, root_path)
+        except ValueError:
+            return ""
+
+        if relative_path.startswith(".."):
+            return ""
+
+        current_id = root_id
+        current_path = root_path
+
+        for part in relative_path.split(os.sep):
+            self.ensure_tree_folder_loaded(current_id, current_path)
+            next_id = ""
+
+            for child_id in self.folder_tree.get_children(current_id):
+                child_path = self.get_tree_item_path(child_id)
+
+                if child_path and os.path.basename(child_path) == part:
+                    next_id = child_id
+                    current_path = child_path
+                    break
+
+            if not next_id:
+                return ""
+
+            current_id = next_id
+
+        return current_id
+
+    def is_path_in_current_folder(self, path: str) -> bool:
+        if not self.current_folder:
+            return False
+
+        try:
+            common_path = os.path.commonpath(
+                [
+                    os.path.abspath(self.current_folder),
+                    os.path.abspath(path),
+                ]
+            )
+        except ValueError:
+            return False
+
+        return os.path.normcase(common_path) == os.path.normcase(os.path.abspath(self.current_folder))
 
     def load_file(self, path: str):
         content = self.file_service.read(path)
