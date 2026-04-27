@@ -10,10 +10,10 @@ PoemCraft is a simple tool to write and manage poems. It helps you create, analy
 
 🔮 Coming soon
 
-Synonym suggestions
-Rhyme finder
-Custom writing ruleset
-Typing objectives
+- Synonym suggestions
+- Rhyme finder
+- Custom writing ruleset
+- Typing objectives
 
 ## Installation
 
