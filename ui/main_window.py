@@ -1,7 +1,8 @@
 import os
+import shutil
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from tkinter import ttk
 
 from core.editor import Editor
@@ -29,6 +30,8 @@ class MainWindow(tk.Tk):
             "active_bg": "#e9eefb",
             "active_fg": "#202124",
             "tree_selected_bg": "#dbe7ff",
+            "scrollbar_bg": "#d7dbe3",
+            "scrollbar_active_bg": "#b8bfcc",
         },
         "dark": {
             "window_bg": "#181a1f",
@@ -49,6 +52,8 @@ class MainWindow(tk.Tk):
             "active_bg": "#384152",
             "active_fg": "#ffffff",
             "tree_selected_bg": "#334467",
+            "scrollbar_bg": "#3a404c",
+            "scrollbar_active_bg": "#505a6b",
         },
     }
     TEXT_FILETYPES = (
@@ -72,6 +77,13 @@ class MainWindow(tk.Tk):
         self.syllable_count_pending = False
         self.current_folder = None
         self.folder_tree_style_name = "Poetry.Treeview"
+        self.scrollbar_style_name = "Poetry.Vertical.TScrollbar"
+        self.ui_style = ttk.Style(self)
+
+        try:
+            self.ui_style.theme_use("clam")
+        except tk.TclError:
+            pass
 
         self.create_widgets()
         self.create_menu()
@@ -171,6 +183,29 @@ class MainWindow(tk.Tk):
         )
         self.folder_label.pack(fill=tk.X, padx=12, pady=(0, 8))
 
+        self.explorer_actions = tk.Frame(self.sidebar_shell, bd=0, highlightthickness=0)
+        self.explorer_actions.pack(fill=tk.X, padx=12, pady=(0, 8))
+
+        explorer_actions = [
+            ("Texte", self.create_text_from_explorer),
+            ("Dossier", self.create_folder_from_explorer),
+            ("Suppr.", self.delete_selected_explorer_item),
+        ]
+
+        for label, command in explorer_actions:
+            button = tk.Button(
+                self.explorer_actions,
+                text=label,
+                command=command,
+                bd=0,
+                padx=9,
+                pady=5,
+                cursor="hand2",
+                font=("Segoe UI", 8, "bold"),
+            )
+            button.pack(side=tk.LEFT, padx=(0, 6))
+            self.toolbar_buttons.append(button)
+
         self.tree_frame = tk.Frame(self.sidebar_shell, bd=0, highlightthickness=0)
         self.tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
 
@@ -184,12 +219,18 @@ class MainWindow(tk.Tk):
         )
         self.folder_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.tree_scrollbar = tk.Scrollbar(self.tree_frame, bd=0, width=12)
+        self.tree_scrollbar = ttk.Scrollbar(
+            self.tree_frame,
+            orient=tk.VERTICAL,
+            style=self.scrollbar_style_name,
+        )
         self.tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.folder_tree.configure(yscrollcommand=self.tree_scrollbar.set)
         self.tree_scrollbar.configure(command=self.folder_tree.yview)
         self.folder_tree.bind("<<TreeviewOpen>>", self.on_tree_open)
         self.folder_tree.bind("<Double-1>", self.open_selected_tree_file)
+        self.folder_tree.bind("<Button-3>", self.show_explorer_context_menu)
+        self.folder_tree.bind("<Delete>", lambda _event: self.delete_selected_explorer_item())
 
         self.editor_shell = tk.Frame(self.workspace, bd=0, highlightthickness=1)
         self.workspace.add(self.editor_shell, minsize=360)
@@ -216,7 +257,11 @@ class MainWindow(tk.Tk):
         self.editor_body = tk.Frame(self.editor_shell, bd=0, highlightthickness=0)
         self.editor_body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 16))
 
-        self.scrollbar = tk.Scrollbar(self.editor_body, bd=0, width=14)
+        self.scrollbar = ttk.Scrollbar(
+            self.editor_body,
+            orient=tk.VERTICAL,
+            style=self.scrollbar_style_name,
+        )
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.syllable_gutter = tk.Canvas(
@@ -290,6 +335,13 @@ class MainWindow(tk.Tk):
         self.menus.append(tools_menu)
 
         tools_menu.add_command(label="Compter les syllabes", command=self.show_syllable_count)
+
+        self.explorer_context_menu = tk.Menu(self, tearoff=False)
+        self.menus.append(self.explorer_context_menu)
+        self.explorer_context_menu.add_command(label="Nouveau texte", command=self.create_text_from_explorer)
+        self.explorer_context_menu.add_command(label="Nouveau dossier", command=self.create_folder_from_explorer)
+        self.explorer_context_menu.add_separator()
+        self.explorer_context_menu.add_command(label="Supprimer", command=self.delete_selected_explorer_item)
 
     def bind_shortcuts(self):
         self.bind("<Control-n>", lambda _event: self.new_file())
@@ -367,6 +419,173 @@ class MainWindow(tk.Tk):
         self.folder_label.configure(text=path)
         self.populate_folder_tree(path)
 
+    def show_explorer_context_menu(self, event):
+        item_id = self.folder_tree.identify_row(event.y)
+
+        if item_id:
+            self.folder_tree.selection_set(item_id)
+            self.folder_tree.focus(item_id)
+
+        self.explorer_context_menu.tk_popup(event.x_root, event.y_root)
+
+    def create_text_from_explorer(self):
+        target_folder = self.get_explorer_target_folder()
+
+        if not target_folder:
+            messagebox.showinfo("Explorateur", "Ouvrez un dossier avant de creer un texte.", parent=self)
+            return
+
+        name = simpledialog.askstring("Nouveau texte", "Nom du texte :", parent=self)
+
+        if not name:
+            return
+
+        filename = name.strip()
+
+        if not filename:
+            return
+
+        if not os.path.splitext(filename)[1]:
+            filename = f"{filename}.txt"
+
+        path = os.path.join(target_folder, filename)
+
+        if os.path.exists(path):
+            messagebox.showerror("Nouveau texte", "Un fichier avec ce nom existe deja.", parent=self)
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8"):
+                pass
+        except OSError as error:
+            messagebox.showerror("Nouveau texte", f"Impossible de creer le texte: {error}", parent=self)
+            return
+
+        self.refresh_folder_tree(path)
+        self.load_file(path)
+
+    def create_folder_from_explorer(self):
+        target_folder = self.get_explorer_target_folder()
+
+        if not target_folder:
+            messagebox.showinfo("Explorateur", "Ouvrez un dossier avant de creer un dossier.", parent=self)
+            return
+
+        name = simpledialog.askstring("Nouveau dossier", "Nom du dossier :", parent=self)
+
+        if not name:
+            return
+
+        folder_name = name.strip()
+
+        if not folder_name:
+            return
+
+        path = os.path.join(target_folder, folder_name)
+
+        if os.path.exists(path):
+            messagebox.showerror("Nouveau dossier", "Un element avec ce nom existe deja.", parent=self)
+            return
+
+        try:
+            os.makedirs(path)
+        except OSError as error:
+            messagebox.showerror("Nouveau dossier", f"Impossible de creer le dossier: {error}", parent=self)
+            return
+
+        self.refresh_folder_tree(path)
+
+    def delete_selected_explorer_item(self):
+        path = self.get_selected_explorer_path()
+
+        if not path:
+            messagebox.showinfo("Explorateur", "Selectionnez un texte ou un dossier a supprimer.", parent=self)
+            return
+
+        if self.current_folder and self.paths_match(path, self.current_folder):
+            messagebox.showinfo("Explorateur", "Le dossier ouvert ne peut pas etre supprime ici.", parent=self)
+            return
+
+        if self.is_current_file_affected_by_delete(path):
+            if not self.confirm_unsaved_changes():
+                return
+
+        item_name = os.path.basename(path)
+        is_folder = os.path.isdir(path)
+        message = f"Supprimer definitivement le dossier '{item_name}' et son contenu ?"
+
+        if not is_folder:
+            message = f"Supprimer definitivement le texte '{item_name}' ?"
+
+        if not messagebox.askyesno("Supprimer", message, parent=self):
+            return
+
+        try:
+            if is_folder:
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except OSError as error:
+            messagebox.showerror("Supprimer", f"Impossible de supprimer: {error}", parent=self)
+            return
+
+        if self.editor_core.file_path and not os.path.exists(self.editor_core.file_path):
+            self.text_edit.delete("1.0", tk.END)
+            self.text_edit.edit_modified(False)
+            self.editor_core = Editor()
+            self.clear_syllable_counts()
+            self.update_window_title()
+            self.update_status()
+
+        self.refresh_folder_tree()
+
+    def get_selected_explorer_path(self) -> str:
+        selection = self.folder_tree.selection()
+
+        if not selection:
+            return ""
+
+        return self.get_tree_item_path(selection[0])
+
+    def get_explorer_target_folder(self) -> str:
+        selected_path = self.get_selected_explorer_path()
+
+        if selected_path:
+            if os.path.isdir(selected_path):
+                return selected_path
+
+            return os.path.dirname(selected_path)
+
+        return self.current_folder or ""
+
+    def is_current_file_affected_by_delete(self, deleted_path: str) -> bool:
+        if not self.editor_core.file_path:
+            return False
+
+        if self.paths_match(deleted_path, self.editor_core.file_path):
+            return True
+
+        if os.path.isdir(deleted_path):
+            return self.is_path_inside_folder(self.editor_core.file_path, deleted_path)
+
+        return False
+
+    def paths_match(self, first_path: str, second_path: str) -> bool:
+        return os.path.normcase(os.path.abspath(first_path)) == os.path.normcase(os.path.abspath(second_path))
+
+    def is_path_inside_folder(self, path: str, folder: str) -> bool:
+        try:
+            common_path = os.path.commonpath(
+                [
+                    os.path.abspath(path),
+                    os.path.abspath(folder),
+                ]
+            )
+        except ValueError:
+            return False
+
+        return os.path.normcase(common_path) == os.path.normcase(os.path.abspath(folder))
+
     def populate_folder_tree(self, path: str):
         self.folder_tree.delete(*self.folder_tree.get_children())
         root_id = self.folder_tree.insert(
@@ -418,7 +637,7 @@ class MainWindow(tk.Tk):
             if entry.name.startswith("."):
                 continue
 
-            label = entry.name
+            label = self.get_tree_display_name(entry)
             item_id = self.folder_tree.insert(
                 parent_id,
                 tk.END,
@@ -428,6 +647,13 @@ class MainWindow(tk.Tk):
 
             if entry.is_dir():
                 self.folder_tree.insert(item_id, tk.END, text="Chargement...", values=("",))
+
+    def get_tree_display_name(self, entry: os.DirEntry) -> str:
+        if entry.is_dir():
+            return entry.name
+
+        name_without_extension, _extension = os.path.splitext(entry.name)
+        return name_without_extension or entry.name
 
     def on_tree_open(self, _event=None):
         item_id = self.folder_tree.focus()
@@ -527,17 +753,7 @@ class MainWindow(tk.Tk):
         if not self.current_folder:
             return False
 
-        try:
-            common_path = os.path.commonpath(
-                [
-                    os.path.abspath(self.current_folder),
-                    os.path.abspath(path),
-                ]
-            )
-        except ValueError:
-            return False
-
-        return os.path.normcase(common_path) == os.path.normcase(os.path.abspath(self.current_folder))
+        return self.is_path_inside_folder(path, self.current_folder)
 
     def load_file(self, path: str):
         content = self.file_service.read(path)
@@ -579,12 +795,8 @@ class MainWindow(tk.Tk):
         self.sidebar_header.configure(bg=theme["surface_bg"])
         self.sidebar_title.configure(bg=theme["surface_bg"], fg=theme["editor_fg"])
         self.folder_label.configure(bg=theme["surface_bg"], fg=theme["muted_fg"])
+        self.explorer_actions.configure(bg=theme["surface_bg"])
         self.tree_frame.configure(bg=theme["surface_bg"])
-        self.tree_scrollbar.configure(
-            bg=theme["menu_bg"],
-            activebackground=theme["active_bg"],
-            troughcolor=theme["surface_bg"],
-        )
 
         self.editor_shell.configure(
             bg=theme["surface_bg"],
@@ -599,11 +811,6 @@ class MainWindow(tk.Tk):
         self.status_left.configure(bg=theme["window_bg"], fg=theme["muted_fg"])
         self.status_right.configure(bg=theme["window_bg"], fg=theme["muted_fg"])
 
-        self.scrollbar.configure(
-            bg=theme["menu_bg"],
-            activebackground=theme["active_bg"],
-            troughcolor=theme["surface_bg"],
-        )
         self.text_edit.configure(
             bg=theme["editor_bg"],
             fg=theme["editor_fg"],
@@ -619,7 +826,7 @@ class MainWindow(tk.Tk):
             activeforeground=theme["active_fg"],
         )
 
-        ttk.Style(self).configure(
+        self.ui_style.configure(
             self.folder_tree_style_name,
             background=theme["surface_bg"],
             foreground=theme["editor_fg"],
@@ -627,11 +834,29 @@ class MainWindow(tk.Tk):
             borderwidth=0,
             rowheight=24,
             font=("Segoe UI", 9),
+            relief="flat",
         )
-        ttk.Style(self).map(
+        self.ui_style.map(
             self.folder_tree_style_name,
             background=[("selected", theme["tree_selected_bg"])],
             foreground=[("selected", theme["editor_fg"])],
+        )
+        self.ui_style.configure(
+            self.scrollbar_style_name,
+            background=theme["scrollbar_bg"],
+            darkcolor=theme["scrollbar_bg"],
+            lightcolor=theme["scrollbar_bg"],
+            troughcolor=theme["surface_bg"],
+            bordercolor=theme["surface_bg"],
+            arrowcolor=theme["muted_fg"],
+            gripcount=0,
+            width=10,
+            relief="flat",
+        )
+        self.ui_style.map(
+            self.scrollbar_style_name,
+            background=[("active", theme["scrollbar_active_bg"])],
+            arrowcolor=[("active", theme["editor_fg"])],
         )
 
         for button in self.toolbar_buttons:
