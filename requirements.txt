@@ -2,5 +2,6 @@
 #
 # tkinter is used for the desktop UI, but it is part of the Python
 pylexique==1.5.1
+Pillow==11.3.0
 # pylexique currently relies on behavior removed/changed in newer setuptools.
 setuptools<81

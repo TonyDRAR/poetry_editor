@@ -1,9 +1,12 @@
+import json
 import os
 import shutil
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 from tkinter import ttk
+
+from PIL import Image, ImageTk
 
 from core.editor import Editor
 from services.file_service import FileService
@@ -60,6 +63,13 @@ class MainWindow(tk.Tk):
         ("Fichiers texte", "*.txt"),
         ("Tous les fichiers", "*.*"),
     )
+    IMAGE_FILETYPES = (
+        ("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+        ("Tous les fichiers", "*.*"),
+    )
+    IMAGE_METADATA_FILENAME = ".poetry_editor_images.json"
+    IMAGE_ASSETS_FOLDER = ".poetry_editor_assets"
+    SETTINGS_FILENAME = "settings.json"
 
     def __init__(self):
         super().__init__()
@@ -70,12 +80,15 @@ class MainWindow(tk.Tk):
 
         self.editor_core = Editor()
         self.file_service = FileService()
-        self.dark_theme_enabled = tk.BooleanVar(value=False)
+        self.app_settings = self.load_app_settings()
+        self.dark_theme_enabled = tk.BooleanVar(value=bool(self.app_settings.get("dark_theme_enabled", False)))
         self.menus = []
         self.toolbar_buttons = []
         self.syllable_line_counts = []
         self.syllable_count_pending = False
         self.current_folder = None
+        self.current_image_path = None
+        self.image_preview = None
         self.folder_tree_style_name = "Poetry.Treeview"
         self.scrollbar_style_name = "Poetry.Vertical.TScrollbar"
         self.ui_style = ttk.Style(self)
@@ -86,9 +99,10 @@ class MainWindow(tk.Tk):
             pass
 
         self.create_widgets()
-        self.create_menu()
+        self.create_context_menus()
         self.apply_theme()
         self.bind_shortcuts()
+        self.restore_session()
         self.update_status()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
 
@@ -121,9 +135,8 @@ class MainWindow(tk.Tk):
         actions = [
             ("Nouveau", self.new_file),
             ("Ouvrir", self.open_file),
-            ("Dossier", self.open_folder),
             ("Sauver", self.save_file),
-            ("Syllabes", self.show_syllable_count),
+            ("Theme sombre", self.toggle_theme),
         ]
         for label, command in actions:
             button = tk.Button(
@@ -183,29 +196,6 @@ class MainWindow(tk.Tk):
         )
         self.folder_label.pack(fill=tk.X, padx=12, pady=(0, 8))
 
-        self.explorer_actions = tk.Frame(self.sidebar_shell, bd=0, highlightthickness=0)
-        self.explorer_actions.pack(fill=tk.X, padx=12, pady=(0, 8))
-
-        explorer_actions = [
-            ("Texte", self.create_text_from_explorer),
-            ("Dossier", self.create_folder_from_explorer),
-            ("Suppr.", self.delete_selected_explorer_item),
-        ]
-
-        for label, command in explorer_actions:
-            button = tk.Button(
-                self.explorer_actions,
-                text=label,
-                command=command,
-                bd=0,
-                padx=9,
-                pady=5,
-                cursor="hand2",
-                font=("Segoe UI", 8, "bold"),
-            )
-            button.pack(side=tk.LEFT, padx=(0, 6))
-            self.toolbar_buttons.append(button)
-
         self.tree_frame = tk.Frame(self.sidebar_shell, bd=0, highlightthickness=0)
         self.tree_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
 
@@ -238,13 +228,50 @@ class MainWindow(tk.Tk):
         self.editor_header = tk.Frame(self.editor_shell, bd=0, highlightthickness=0)
         self.editor_header.pack(fill=tk.X, padx=18, pady=(14, 8))
 
+        self.editor_title_block = tk.Frame(self.editor_header, bd=0, highlightthickness=0)
+        self.editor_title_block.pack(side=tk.LEFT)
+
         self.mode_label = tk.Label(
-            self.editor_header,
+            self.editor_title_block,
             text="Redaction",
             anchor="w",
             font=("Segoe UI", 10, "bold"),
         )
-        self.mode_label.pack(side=tk.LEFT)
+        self.mode_label.pack(anchor="w")
+
+        self.syllables_button = tk.Button(
+            self.editor_title_block,
+            text="Syllabes",
+            command=self.show_syllable_count,
+            bd=0,
+            padx=10,
+            pady=6,
+            cursor="hand2",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.syllables_button.pack(anchor="w", pady=(6, 0))
+        self.toolbar_buttons.append(self.syllables_button)
+
+        self.editor_tools = tk.Frame(self.editor_header, bd=0, highlightthickness=0)
+        self.editor_tools.pack(side=tk.RIGHT, padx=(12, 0))
+
+        editor_actions = [
+            ("Image", self.import_image_for_current_file),
+        ]
+
+        for label, command in editor_actions:
+            button = tk.Button(
+                self.editor_tools,
+                text=label,
+                command=command,
+                bd=0,
+                padx=10,
+                pady=6,
+                cursor="hand2",
+                font=("Segoe UI", 8, "bold"),
+            )
+            button.pack(side=tk.LEFT, padx=(0, 6))
+            self.toolbar_buttons.append(button)
 
         self.hint_label = tk.Label(
             self.editor_header,
@@ -254,8 +281,38 @@ class MainWindow(tk.Tk):
         )
         self.hint_label.pack(side=tk.RIGHT)
 
-        self.editor_body = tk.Frame(self.editor_shell, bd=0, highlightthickness=0)
-        self.editor_body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 16))
+        self.editor_content = tk.Frame(self.editor_shell, bd=0, highlightthickness=0)
+        self.editor_content.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 16))
+
+        self.editor_body = tk.Frame(self.editor_content, bd=0, highlightthickness=0)
+        self.editor_body.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.image_panel = tk.Frame(self.editor_content, bd=0, highlightthickness=0, width=340)
+        self.image_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(18, 0))
+        self.image_panel.pack_propagate(False)
+
+        self.image_preview_label = tk.Label(
+            self.image_panel,
+            anchor="n",
+            bd=0,
+            padx=0,
+            pady=0,
+        )
+        self.image_preview_label.pack(fill=tk.X)
+
+        self.remove_image_button = tk.Button(
+            self.image_panel,
+            text="Retirer l'image",
+            command=self.remove_image_from_current_file,
+            bd=0,
+            padx=12,
+            pady=7,
+            cursor="hand2",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.remove_image_button.pack(anchor="w", pady=(12, 0))
+        self.toolbar_buttons.append(self.remove_image_button)
+        self.image_panel.pack_forget()
 
         self.scrollbar = ttk.Scrollbar(
             self.editor_body,
@@ -303,39 +360,7 @@ class MainWindow(tk.Tk):
         self.text_edit.bind("<Configure>", lambda _event: self.schedule_syllable_gutter_redraw())
         self.text_edit.bind("<MouseWheel>", lambda _event: self.schedule_syllable_gutter_redraw(), add="+")
 
-    def create_menu(self):
-        self.menu = tk.Menu(self)
-        self.config(menu=self.menu)
-
-        file_menu = tk.Menu(self.menu, tearoff=False)
-        self.menu.add_cascade(label="Fichier", menu=file_menu)
-        self.menus.append(file_menu)
-
-        file_menu.add_command(label="Nouveau", command=self.new_file, accelerator="Ctrl+N")
-        file_menu.add_command(label="Ouvrir", command=self.open_file, accelerator="Ctrl+O")
-        file_menu.add_command(label="Ouvrir un dossier", command=self.open_folder, accelerator="Ctrl+K")
-        file_menu.add_separator()
-        file_menu.add_command(label="Sauvegarder", command=self.save_file, accelerator="Ctrl+S")
-        file_menu.add_command(label="Sauvegarder sous", command=self.save_file_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Quitter", command=self.close_window)
-
-        options_menu = tk.Menu(self.menu, tearoff=False)
-        self.menu.add_cascade(label="Options", menu=options_menu)
-        self.menus.append(options_menu)
-
-        options_menu.add_checkbutton(
-            label="Theme sombre",
-            variable=self.dark_theme_enabled,
-            command=self.apply_theme,
-        )
-
-        tools_menu = tk.Menu(self.menu, tearoff=False)
-        self.menu.add_cascade(label="Outils", menu=tools_menu)
-        self.menus.append(tools_menu)
-
-        tools_menu.add_command(label="Compter les syllabes", command=self.show_syllable_count)
-
+    def create_context_menus(self):
         self.explorer_context_menu = tk.Menu(self, tearoff=False)
         self.menus.append(self.explorer_context_menu)
         self.explorer_context_menu.add_command(label="Nouveau texte", command=self.create_text_from_explorer)
@@ -349,14 +374,68 @@ class MainWindow(tk.Tk):
         self.bind("<Control-s>", lambda _event: self.save_file())
         self.bind("<Control-k>", lambda _event: self.open_folder())
 
+    def toggle_theme(self):
+        self.dark_theme_enabled.set(not self.dark_theme_enabled.get())
+        self.apply_theme()
+        self.save_app_settings()
+
+    def get_settings_path(self) -> str:
+        app_data_path = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        settings_folder = os.path.join(app_data_path, "PoetryEditor")
+        return os.path.join(settings_folder, self.SETTINGS_FILENAME)
+
+    def load_app_settings(self) -> dict:
+        settings_path = self.get_settings_path()
+
+        if not os.path.exists(settings_path):
+            return {}
+
+        try:
+            with open(settings_path, "r", encoding="utf-8") as settings_file:
+                settings = json.load(settings_file)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+        return settings if isinstance(settings, dict) else {}
+
+    def save_app_settings(self):
+        settings_path = self.get_settings_path()
+        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+
+        settings = {
+            "dark_theme_enabled": self.dark_theme_enabled.get(),
+            "current_folder": self.current_folder,
+            "current_file": self.editor_core.file_path,
+        }
+
+        try:
+            with open(settings_path, "w", encoding="utf-8") as settings_file:
+                json.dump(settings, settings_file, indent=2, ensure_ascii=False)
+        except OSError:
+            pass
+
+    def restore_session(self):
+        folder_path = self.app_settings.get("current_folder")
+        file_path = self.app_settings.get("current_file")
+
+        if folder_path and os.path.isdir(folder_path):
+            self.current_folder = folder_path
+            self.folder_label.configure(text=folder_path)
+            self.populate_folder_tree(folder_path)
+
+        if file_path and os.path.isfile(file_path):
+            self.load_file(file_path, persist_settings=False)
+
     def new_file(self):
         if self.confirm_unsaved_changes():
             self.text_edit.delete("1.0", tk.END)
             self.text_edit.edit_modified(False)
             self.editor_core = Editor()
+            self.clear_current_image()
             self.clear_syllable_counts()
             self.update_window_title()
             self.update_status()
+            self.save_app_settings()
 
     def open_file(self):
         if not self.confirm_unsaved_changes():
@@ -383,6 +462,7 @@ class MainWindow(tk.Tk):
             self.update_window_title()
             self.update_status()
             self.refresh_folder_tree(self.editor_core.file_path)
+            self.save_app_settings()
 
         return success
 
@@ -403,9 +483,11 @@ class MainWindow(tk.Tk):
             self.editor_core.set_file_path(path)
             self.editor_core.set_content(content)
             self.text_edit.edit_modified(False)
+            self.load_associated_image()
             self.update_window_title()
             self.update_status()
             self.refresh_folder_tree(path)
+            self.save_app_settings()
 
         return success
 
@@ -418,6 +500,7 @@ class MainWindow(tk.Tk):
         self.current_folder = path
         self.folder_label.configure(text=path)
         self.populate_folder_tree(path)
+        self.save_app_settings()
 
     def show_explorer_context_menu(self, event):
         item_id = self.folder_tree.identify_row(event.y)
@@ -524,6 +607,7 @@ class MainWindow(tk.Tk):
             if is_folder:
                 shutil.rmtree(path)
             else:
+                self.delete_associated_image(path)
                 os.remove(path)
         except OSError as error:
             messagebox.showerror("Supprimer", f"Impossible de supprimer: {error}", parent=self)
@@ -538,6 +622,134 @@ class MainWindow(tk.Tk):
             self.update_status()
 
         self.refresh_folder_tree()
+        self.save_app_settings()
+
+    def import_image_for_current_file(self):
+        if not self.editor_core.has_file():
+            if not self.save_file_as():
+                return
+
+        image_path = filedialog.askopenfilename(
+            title="Importer une image",
+            filetypes=self.IMAGE_FILETYPES,
+        )
+
+        if not image_path:
+            return
+
+        try:
+            stored_image_path = self.copy_image_to_text_assets(image_path)
+            metadata = self.read_image_metadata(self.editor_core.file_path)
+            metadata[os.path.basename(self.editor_core.file_path)] = os.path.relpath(
+                stored_image_path,
+                os.path.dirname(self.editor_core.file_path),
+            )
+            self.write_image_metadata(self.editor_core.file_path, metadata)
+        except OSError as error:
+            messagebox.showerror("Image", f"Impossible d'importer l'image: {error}", parent=self)
+            return
+
+        self.current_image_path = stored_image_path
+        self.display_current_image()
+
+    def remove_image_from_current_file(self):
+        if not self.editor_core.has_file():
+            return
+
+        self.delete_associated_image(self.editor_core.file_path)
+        self.clear_current_image()
+
+    def delete_associated_image(self, text_path: str):
+        metadata = self.read_image_metadata(text_path)
+        text_key = os.path.basename(text_path)
+
+        if text_key not in metadata:
+            return
+
+        image_path = self.get_associated_image_path(text_path, metadata)
+        metadata.pop(text_key, None)
+        self.write_image_metadata(text_path, metadata)
+
+        if image_path and os.path.exists(image_path):
+            os.remove(image_path)
+
+    def copy_image_to_text_assets(self, source_path: str) -> str:
+        text_path = self.editor_core.file_path
+        text_folder = os.path.dirname(text_path)
+        text_name = os.path.splitext(os.path.basename(text_path))[0]
+        source_extension = os.path.splitext(source_path)[1].lower() or ".png"
+        assets_folder = os.path.join(text_folder, self.IMAGE_ASSETS_FOLDER)
+        os.makedirs(assets_folder, exist_ok=True)
+
+        destination_path = os.path.join(assets_folder, f"{text_name}{source_extension}")
+
+        if os.path.normcase(os.path.abspath(source_path)) != os.path.normcase(os.path.abspath(destination_path)):
+            shutil.copy2(source_path, destination_path)
+
+        return destination_path
+
+    def read_image_metadata(self, text_path: str) -> dict[str, str]:
+        metadata_path = self.get_image_metadata_path(text_path)
+
+        if not os.path.exists(metadata_path):
+            return {}
+
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+                metadata = json.load(metadata_file)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+        return metadata if isinstance(metadata, dict) else {}
+
+    def write_image_metadata(self, text_path: str, metadata: dict[str, str]):
+        metadata_path = self.get_image_metadata_path(text_path)
+
+        with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+            json.dump(metadata, metadata_file, indent=2, ensure_ascii=False)
+
+    def get_image_metadata_path(self, text_path: str) -> str:
+        return os.path.join(os.path.dirname(text_path), self.IMAGE_METADATA_FILENAME)
+
+    def get_associated_image_path(self, text_path: str, metadata: dict[str, str] | None = None) -> str:
+        metadata = metadata if metadata is not None else self.read_image_metadata(text_path)
+        relative_image_path = metadata.get(os.path.basename(text_path), "")
+
+        if not relative_image_path:
+            return ""
+
+        image_path = os.path.join(os.path.dirname(text_path), relative_image_path)
+        return image_path if os.path.exists(image_path) else ""
+
+    def load_associated_image(self):
+        if not self.editor_core.has_file():
+            self.clear_current_image()
+            return
+
+        self.current_image_path = self.get_associated_image_path(self.editor_core.file_path)
+        self.display_current_image()
+
+    def display_current_image(self):
+        if not self.current_image_path:
+            self.clear_current_image()
+            return
+
+        try:
+            image = Image.open(self.current_image_path)
+            image.thumbnail((320, 460), Image.Resampling.LANCZOS)
+            self.image_preview = ImageTk.PhotoImage(image)
+        except (OSError, tk.TclError):
+            self.clear_current_image()
+            return
+
+        self.image_preview_label.configure(image=self.image_preview)
+        self.image_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(18, 0))
+
+    def clear_current_image(self):
+        self.current_image_path = None
+        self.image_preview = None
+        self.image_preview_label.configure(image="")
+        self.image_panel.pack_forget()
 
     def get_selected_explorer_path(self) -> str:
         selection = self.folder_tree.selection()
@@ -755,7 +967,7 @@ class MainWindow(tk.Tk):
 
         return self.is_path_inside_folder(path, self.current_folder)
 
-    def load_file(self, path: str):
+    def load_file(self, path: str, persist_settings: bool = True):
         content = self.file_service.read(path)
         self.editor_core.set_content(content)
         self.editor_core.set_file_path(path)
@@ -763,9 +975,13 @@ class MainWindow(tk.Tk):
         self.text_edit.delete("1.0", tk.END)
         self.text_edit.insert("1.0", content)
         self.text_edit.edit_modified(False)
+        self.load_associated_image()
         self.clear_syllable_counts()
         self.update_window_title()
         self.update_status()
+
+        if persist_settings:
+            self.save_app_settings()
 
     def on_text_changed(self, _event=None):
         if self.text_edit.edit_modified():
@@ -795,7 +1011,6 @@ class MainWindow(tk.Tk):
         self.sidebar_header.configure(bg=theme["surface_bg"])
         self.sidebar_title.configure(bg=theme["surface_bg"], fg=theme["editor_fg"])
         self.folder_label.configure(bg=theme["surface_bg"], fg=theme["muted_fg"])
-        self.explorer_actions.configure(bg=theme["surface_bg"])
         self.tree_frame.configure(bg=theme["surface_bg"])
 
         self.editor_shell.configure(
@@ -804,9 +1019,14 @@ class MainWindow(tk.Tk):
             highlightcolor=theme["surface_border"],
         )
         self.editor_header.configure(bg=theme["surface_bg"])
+        self.editor_title_block.configure(bg=theme["surface_bg"])
         self.mode_label.configure(bg=theme["surface_bg"], fg=theme["editor_fg"])
+        self.editor_tools.configure(bg=theme["surface_bg"])
         self.hint_label.configure(bg=theme["surface_bg"], fg=theme["muted_fg"])
+        self.editor_content.configure(bg=theme["surface_bg"])
         self.editor_body.configure(bg=theme["surface_bg"])
+        self.image_panel.configure(bg=theme["surface_bg"])
+        self.image_preview_label.configure(bg=theme["surface_bg"])
         self.status_bar.configure(bg=theme["window_bg"])
         self.status_left.configure(bg=theme["window_bg"], fg=theme["muted_fg"])
         self.status_right.configure(bg=theme["window_bg"], fg=theme["muted_fg"])
@@ -819,13 +1039,6 @@ class MainWindow(tk.Tk):
             selectforeground=theme["select_fg"],
         )
         self.syllable_gutter.configure(bg=theme["editor_bg"])
-        self.menu.configure(
-            bg=theme["menu_bg"],
-            fg=theme["menu_fg"],
-            activebackground=theme["active_bg"],
-            activeforeground=theme["active_fg"],
-        )
-
         self.ui_style.configure(
             self.folder_tree_style_name,
             background=theme["surface_bg"],
@@ -1031,6 +1244,7 @@ class MainWindow(tk.Tk):
 
     def close_window(self):
         if self.confirm_unsaved_changes():
+            self.save_app_settings()
             self.destroy()
 
     def get_text_content(self) -> str:
